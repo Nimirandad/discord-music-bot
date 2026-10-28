@@ -136,6 +136,56 @@ sudo systemctl restart discord-music-bot
 
 Use the format `CONTAINER_IMAGE=ghcr.io/<owner>/discord-music-bot:<tag>`. The systemd service pulls the image before starting the container.
 
+## Automatic GitHub Actions deployment over Tailscale
+
+The repository workflow `.github/workflows/deploy.yml` runs tests and `go vet`, builds a Linux ARM64 image, publishes it to GHCR, then deploys it over a private Tailscale connection. The first workflow run publishes `1.1.5`; later runs increment the patch version. A failed health check restores the previous image reference and restarts the service. Each deployment restarts the bot, so its in-memory queues and active voice sessions end.
+
+### Prepare the Oracle VM
+
+Install Tailscale on the VM and authenticate it into your tailnet. In the Tailscale admin console, assign the VM the tag `tag:oracle-prod`. Keep TCP/22 closed to the public Internet in the OCI security list; the CI runner reaches SSH through the tailnet. Add a tailnet policy rule allowing `tag:ci` to reach `tag:oracle-prod` on TCP/22. Merge these entries into the existing policy rather than replacing unrelated rules:
+
+```json
+{
+  "tagOwners": {
+    "tag:ci": ["autogroup:admin"],
+    "tag:oracle-prod": ["autogroup:admin"]
+  },
+  "acls": [
+    { "action": "accept", "src": ["tag:ci"], "dst": ["tag:oracle-prod:22"] }
+  ]
+}
+```
+
+Install Tailscale using its [official Linux instructions](https://tailscale.com/kb/1031/install-linux/), authenticate the VM, and run `sudo tailscale up --advertise-tags=tag:oracle-prod`. Approve the device tag in the admin console if prompted.
+
+Install the restricted deploy helper and account on the existing VM. Run these commands from the repository root on your workstation; replace the host with the VM's current public SSH address for this one-time setup:
+
+```powershell
+ssh-keygen -t ed25519 -f "$HOME\.ssh\discord-music-ci" -C "discord-music-bot GitHub Actions"
+scp deployments/oracle/deploy-image.sh ubuntu@<oracle-public-ip>:/tmp/deploy-discord-music-bot
+Get-Content "$HOME\.ssh\discord-music-ci.pub" | ssh ubuntu@<oracle-public-ip> "sudo useradd --create-home --shell /bin/bash discord-deploy 2>/dev/null || true; sudo install -d -o discord-deploy -g discord-deploy -m 700 /home/discord-deploy/.ssh; sudo tee /home/discord-deploy/.ssh/authorized_keys >/dev/null; sudo chown discord-deploy:discord-deploy /home/discord-deploy/.ssh/authorized_keys; sudo chmod 600 /home/discord-deploy/.ssh/authorized_keys; sudo install -o root -g root -m 755 /tmp/deploy-discord-music-bot /usr/local/sbin/deploy-discord-music-bot; echo 'discord-deploy ALL=(root) NOPASSWD: /usr/local/sbin/deploy-discord-music-bot' | sudo tee /etc/sudoers.d/discord-music-deploy >/dev/null; sudo chmod 440 /etc/sudoers.d/discord-music-deploy; sudo visudo -cf /etc/sudoers.d/discord-music-deploy; sudo rm -f /tmp/deploy-discord-music-bot"
+```
+
+Connect to the Oracle VM through Tailscale once and verify its MagicDNS name or `100.x` address. Obtain its SSH host key through that private connection and verify the fingerprint against `/etc/ssh/ssh_host_ed25519_key.pub` on the VM. This verified `known_hosts` entry will be stored in GitHub; do not trust an unverified `ssh-keyscan` result.
+
+### Configure Tailscale and GitHub
+
+1. In the Tailscale admin console, create an OAuth client with the `auth_keys` scope and permission to create ephemeral nodes tagged `tag:ci`. The workflow uses the official Tailscale GitHub Action to join the runner to the tailnet for the job, then removes that ephemeral runner afterward. See the [Tailscale GitHub Action setup](https://github.com/tailscale/github-action#prerequisites).
+2. In GitHub, open **Settings → Secrets and variables → Actions** and add these repository secrets:
+
+   | Secret | Value |
+   |---|---|
+   | `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID |
+   | `TS_OAUTH_SECRET` | Tailscale OAuth client secret |
+   | `ORACLE_HOST` | `discord-deploy@<Oracle MagicDNS name or 100.x address>` |
+   | `ORACLE_DEPLOY_SSH_KEY` | Contents of the private key `discord-music-ci`, including its header and footer |
+   | `ORACLE_KNOWN_HOSTS` | Verified SSH host-key line for the exact hostname/IP in `ORACLE_HOST` |
+
+3. Confirm `ghcr.io/nimirandad/discord-music-bot` is public and that GitHub Actions can publish packages. The workflow uses its short-lived `GITHUB_TOKEN`; no GHCR password is needed.
+4. Commit and push the workflow to `main`. GitHub runs tests first, then publishes and deploys. The image version is `1.1.<workflow run number + 4>`, so the first run is `1.1.5`; rerunning the same Actions run reuses that version. Review the Actions log and Oracle service health after the first deployment.
+
+The Tailscale GitHub Action requires the Tailscale OAuth client to have the `auth_keys` scope and the `tag:ci` tag to be permitted by the tailnet policy. For additional workflow hardening, pin third-party Actions to full commit SHAs and update those pins deliberately.
+
 ## Cleanup
 
 From this directory:

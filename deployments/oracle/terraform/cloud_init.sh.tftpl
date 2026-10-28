@@ -3,7 +3,7 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y docker.io
+apt-get install -y docker.io curl
 systemctl enable --now docker
 docker network create discord-music-bot
 
@@ -11,6 +11,13 @@ cat >/etc/discord-music-bot-image <<'IMAGE'
 CONTAINER_IMAGE=${container_image}
 IMAGE
 chmod 0644 /etc/discord-music-bot-image
+
+printf '%s' '${deploy_script_b64}' | base64 --decode > /usr/local/sbin/deploy-discord-music-bot
+chmod 0755 /usr/local/sbin/deploy-discord-music-bot
+useradd --create-home --shell /bin/bash discord-deploy
+printf '%s\n' 'discord-deploy ALL=(root) NOPASSWD: /usr/local/sbin/deploy-discord-music-bot' > /etc/sudoers.d/discord-music-deploy
+chmod 0440 /etc/sudoers.d/discord-music-deploy
+visudo -cf /etc/sudoers.d/discord-music-deploy
 
 cat >/etc/systemd/system/discord-music-bot.service <<'UNIT'
 [Unit]

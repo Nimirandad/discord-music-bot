@@ -104,7 +104,8 @@ resource "oci_core_instance" "bot" {
   metadata = {
     ssh_authorized_keys = trimspace(var.ssh_public_key)
     user_data = base64encode(templatefile("${path.module}/cloud_init.sh.tftpl", {
-      container_image = var.container_image
+      container_image   = var.container_image
+      deploy_script_b64 = filebase64("${path.module}/deploy-image.sh")
     }))
   }
 }
