@@ -6,6 +6,7 @@ Bot de música para Discord implementado en Go. Usa comandos de texto con prefij
 
 - La actividad del bot muestra “Escuchando !play”. Los comandos slash de la aplicación no se usan; los comandos válidos del bot usan el prefijo `!`.
 - `!play cancion`: URL de YouTube, enlace Spotify de pista/playlist o búsqueda de texto.
+- `!help` o `!ayuda`: muestra la lista de comandos y su uso en cualquier canal de texto.
 - `!join`: conecta o mueve el bot al canal de voz donde estás; si había una canción activa, la reinicia en el canal nuevo.
 - Los comandos de música quedan vinculados al canal de texto del primer `!play`; si se envían desde otro canal, el bot indica dónde usarlos. `!stop` o `!leave` libera el canal asignado.
 - Las playlists de Spotify comienzan a reproducirse al resolver la primera canción; el resto se resuelve en grupos ordenados en segundo plano. `!stop` cancela esa carga.

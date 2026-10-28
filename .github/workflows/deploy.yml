@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -19,10 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -35,7 +37,46 @@ jobs:
       - name: Calculate image version
         id: version
         shell: bash
-        run: echo "tag=1.1.$((GITHUB_RUN_NUMBER + 4))" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          baseline_tag="v1.1.5"
+          baseline_commit="b55d91b"
+          latest_tag="$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)"
+
+          if [[ -n "$latest_tag" ]] && git merge-base --is-ancestor "$latest_tag" HEAD; then
+            base_tag="$latest_tag"
+            base_version="${base_tag#v}"
+            base_commit="$base_tag"
+          else
+            base_tag="$baseline_tag"
+            base_version="${baseline_tag#v}"
+            base_commit="$baseline_commit"
+          fi
+
+          if git tag --points-at HEAD | grep -Fxq "$base_tag"; then
+            version="$base_version"
+          else
+            IFS=. read -r major minor patch <<< "$base_version"
+            bump=patch
+            while IFS= read -r subject; do
+              [[ -n "$subject" ]] || continue
+              if [[ "$subject" =~ ^[a-zA-Z]+(\([^)]*\))?!: ]] || [[ "$subject" == *"BREAKING CHANGE:"* ]]; then
+                bump=major
+                break
+              elif [[ "$subject" =~ ^feat(\([^)]*\))?: ]] && [[ "$bump" != major ]]; then
+                bump=minor
+              fi
+            done < <(git log --format=%s "$base_commit..HEAD")
+
+            case "$bump" in
+              major) version="$((major + 1)).0.0" ;;
+              minor) version="$major.$((minor + 1)).0" ;;
+              patch) version="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
+          echo "version_tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Connect runner to the private tailnet
         uses: tailscale/github-action@v4
@@ -45,7 +86,7 @@ jobs:
           tags: tag:ci
 
       - name: Load restricted Oracle deploy key
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.ORACLE_DEPLOY_SSH_KEY }}
 
@@ -66,24 +107,26 @@ jobs:
           'sudo -n -l /usr/local/sbin/deploy-discord-music-bot'
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish ARM64 image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/arm64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ghcr.io/nimirandad/discord-music-bot:${{ steps.version.outputs.tag }}
             ghcr.io/nimirandad/discord-music-bot:sha-${{ github.sha }}
@@ -96,3 +139,21 @@ jobs:
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20
           "$ORACLE_HOST"
           "sudo /usr/local/sbin/deploy-discord-music-bot '$IMAGE'"
+
+      - name: Record successful release version
+        env:
+          VERSION_TAG: ${{ steps.version.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$VERSION_TAG" >/dev/null; then
+            tagged_commit="$(git rev-list -n1 "$VERSION_TAG")"
+            if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+              echo "Release tag $VERSION_TAG already points to $tagged_commit, expected $GITHUB_SHA" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION_TAG" "$GITHUB_SHA" -m "Release $VERSION_TAG"
+          git push origin "$VERSION_TAG"

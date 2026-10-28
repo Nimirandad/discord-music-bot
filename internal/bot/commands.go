@@ -21,6 +21,10 @@ func (b *Bot) onMessage(event *events.GuildMessageCreate) {
 	if !ok {
 		return
 	}
+	if command == "help" || command == "ayuda" {
+		b.sendMessage(event, helpMessage())
+		return
+	}
 	if isMusicCommand(command) && !b.isCommandChannel(event) {
 		return
 	}
