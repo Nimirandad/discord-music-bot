@@ -53,20 +53,26 @@ jobs:
             base_commit="$baseline_commit"
           fi
 
+          if ! git cat-file -e "$base_commit^{commit}" 2>/dev/null; then
+            echo "Could not find version baseline commit $base_commit in the checked-out history" >&2
+            exit 1
+          fi
+
           if git tag --points-at HEAD | grep -Fxq "$base_tag"; then
             version="$base_version"
           else
             IFS=. read -r major minor patch <<< "$base_version"
+            commit_messages="$(git log --format='%s%n%b' "$base_commit..HEAD")"
+            feature_subjects="$(git log --format=%s "$base_commit..HEAD")"
+            breaking_pattern='^[a-zA-Z]+(\([^)]*\))?!:'
+            feature_pattern='^feat(\([^)]*\))?:'
+
             bump=patch
-            while IFS= read -r subject; do
-              [[ -n "$subject" ]] || continue
-              if [[ "$subject" =~ ^[a-zA-Z]+(\([^)]*\))?!: ]] || [[ "$subject" == *"BREAKING CHANGE:"* ]]; then
-                bump=major
-                break
-              elif [[ "$subject" =~ ^feat(\([^)]*\))?: ]] && [[ "$bump" != major ]]; then
-                bump=minor
-              fi
-            done < <(git log --format=%s "$base_commit..HEAD")
+            if grep -Eq "$breaking_pattern" <<< "$feature_subjects" || grep -q '^BREAKING CHANGE:' <<< "$commit_messages"; then
+              bump=major
+            elif grep -Eq "$feature_pattern" <<< "$feature_subjects"; then
+              bump=minor
+            fi
 
             case "$bump" in
               major) version="$((major + 1)).0.0" ;;
