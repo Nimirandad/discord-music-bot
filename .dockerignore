@@ -3,6 +3,7 @@
 .env.*
 /bin/
 /dist/
+Makefile
 *.exe
 *.log
 *.tmp

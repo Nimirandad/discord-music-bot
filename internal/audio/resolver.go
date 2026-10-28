@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 )
 
 const (
-	initialSearchCandidates = 1
+	initialSearchCandidates = 5
 	searchCandidates        = 5
 )
 
 type Track struct {
 	Title           string
+	SongTitle       string
 	Artist          string
 	URL             string
 	Duration        time.Duration
@@ -29,6 +33,9 @@ type Track struct {
 type Resolver struct {
 	YTDLPPath   string
 	CookiesFile string
+	preparedMu  sync.Mutex
+	prepared    map[string]preparedMedia
+	preparing   map[string]*mediaPreparation
 }
 
 type ytDLPResult struct {
@@ -79,7 +86,7 @@ func (r *Resolver) Resolve(ctx context.Context, query string) (Track, error) {
 			return Track{}, err
 		}
 		if len(tracks) > 0 {
-			track := tracks[0]
+			track := withFallbacks(tracks)
 			track.FallbackQueries = append(append([]string(nil), queries[index+1:]...), searchQuery)
 			return track, nil
 		}
@@ -136,7 +143,50 @@ func withDeferredSearchQueries(track Track, queries []string) Track {
 }
 
 func (r *Resolver) resolveSearch(ctx context.Context, query string, candidateCount int) ([]Track, error) {
-	return r.resolveTracks(ctx, fmt.Sprintf("ytsearch%d:%s", candidateCount, query))
+	tracks, err := r.resolveTracks(ctx, fmt.Sprintf("ytsearch%d:%s", candidateCount, lyricSearchQuery(query)))
+	return preferAudioTracks(tracks), err
+}
+
+func lyricSearchQuery(query string) string {
+	words := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+	for _, word := range words {
+		switch word {
+		case "lyric", "lyrics", "letra", "letras", "audio", "visualizer", "visualiser":
+			return query
+		}
+	}
+	return query + " lyrics"
+}
+
+func audioTitleScore(title string) int {
+	title = strings.ToLower(title)
+	for _, word := range []string{"lyric", "letra"} {
+		if strings.Contains(title, word) {
+			return 3
+		}
+	}
+	for _, word := range []string{"official video", "official music video", "music video", "videoclip", "video oficial", "vídeo oficial", "official mv", "official m/v"} {
+		if strings.Contains(title, word) {
+			return -1
+		}
+	}
+	for _, word := range []string{"audio", "visualizer", "visualiser"} {
+		if strings.Contains(title, word) {
+			return 2
+		}
+	}
+	return 0
+}
+
+func preferAudioTracks(tracks []Track) []Track {
+	filtered := make([]Track, 0, len(tracks))
+	for _, track := range tracks {
+		if audioTitleScore(track.Title) >= 0 {
+			filtered = append(filtered, track)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool { return audioTitleScore(filtered[i].Title) > audioTitleScore(filtered[j].Title) })
+	return filtered
 }
 
 func fallbackSearchQueries(query string) []string {
@@ -189,7 +239,7 @@ func normalizeQuery(query string) string {
 
 func (r *Resolver) ResolveRelated(ctx context.Context, previous Track) (Track, error) {
 	query := strings.TrimSpace("songs similar to " + previous.Title + " " + previous.Artist)
-	tracks, err := r.resolveTracks(ctx, "ytsearch5:"+query)
+	tracks, err := r.resolveSearch(ctx, query, searchCandidates)
 	if err != nil {
 		return Track{}, err
 	}
@@ -232,29 +282,18 @@ func appendUniqueTracks(existing, candidates []Track, excludedURL string) []Trac
 }
 
 func (r *Resolver) resolveTracks(ctx context.Context, query string) ([]Track, error) {
-	args := []string{"--dump-single-json", "--no-warnings", "--no-cache-dir"}
-	if isYTDLPSearch(query) {
-		args = append(args, "--flat-playlist")
-	} else {
-		args = append(args, "--no-playlist")
-	}
-	args = appendYTDLPCookies(args, r.CookiesFile)
-	args = appendYTDLPPOProvider(args)
-	args = append(args, query)
-	command := exec.CommandContext(ctx, r.YTDLPPath, args...)
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	output, err := command.Output()
+	output, err := r.extractMetadata(ctx, query)
 	if err != nil {
-		if message := strings.TrimSpace(stderr.String()); message != "" {
-			return nil, fmt.Errorf("resolve media with yt-dlp: %w: %s", err, message)
-		}
-		return nil, fmt.Errorf("resolve media with yt-dlp: %w", err)
+		return nil, err
 	}
-
 	var result ytDLPResult
 	if err := json.Unmarshal(output, &result); err != nil {
 		return nil, fmt.Errorf("decode yt-dlp metadata: %w", err)
+	}
+	if !isYTDLPSearch(query) && len(result.Entries) == 0 {
+		if track, ok := trackFromResult(result); ok {
+			r.storePrepared(track.URL, output, time.Now())
+		}
 	}
 	results := result.Entries
 	if len(results) == 0 {
@@ -267,6 +306,32 @@ func (r *Resolver) resolveTracks(ctx context.Context, query string) ([]Track, er
 		}
 	}
 	return tracks, nil
+}
+
+func (r *Resolver) extractMetadata(ctx context.Context, query string) ([]byte, error) {
+	args := []string{"--dump-single-json", "--no-warnings"}
+	if isYTDLPSearch(query) {
+		args = append(args, "--flat-playlist")
+	} else {
+		args = append(args, "--no-playlist", "-f", "bestaudio/best")
+	}
+	args = appendYTDLPCookies(args, r.CookiesFile)
+	args = appendYTDLPPOProvider(args)
+	args = append(args, query)
+	command := exec.CommandContext(ctx, r.YTDLPPath, args...)
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	var output metadataBuffer
+	command.Stdout = &output
+	err := command.Run()
+	if err != nil {
+		if message := strings.TrimSpace(stderr.String()); message != "" {
+			return nil, fmt.Errorf("resolve media with yt-dlp: %w: %s", err, message)
+		}
+		return nil, fmt.Errorf("resolve media with yt-dlp: %w", err)
+	}
+
+	return output.Bytes(), nil
 }
 
 func appendYTDLPCookies(args []string, cookiesFile string) []string {

@@ -14,6 +14,7 @@ FROM denoland/deno:2.3.7 AS deno
 FROM debian:bookworm-slim
 
 ENV PATH="/opt/yt-dlp-venv/bin:${PATH}" \
+    XDG_CACHE_HOME=/var/lib/discord-music-bot/cache \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

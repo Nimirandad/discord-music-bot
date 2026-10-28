@@ -15,11 +15,13 @@ import (
 type PlayFunc func(context.Context, audio.Track, audio.PlaybackControls) error
 type ErrorFunc func(error)
 type AutoPlayFunc func(context.Context, audio.Track) (audio.Track, error)
+type PrefetchFunc func(context.Context, audio.Track) error
 
 type Snapshot struct {
 	Current     *audio.Track
 	Queue       []audio.Track
 	Paused      bool
+	Loading     bool
 	CanPrevious bool
 	LoopTrack   bool
 	AutoPlay    bool
@@ -38,6 +40,14 @@ type Player struct {
 	autoPlay              bool
 	connectionMoving      bool
 	autoPlayFunc          AutoPlayFunc
+	prefetchFunc          PrefetchFunc
+	prefetchCancel        context.CancelFunc
+	prefetchKey           string
+	prefetchGeneration    uint64
+	prefetchAttemptedKey  string
+	prefetchedKey         string
+	prefetchReady         bool
+	playbackGeneration    uint64
 	closed                bool
 	skipHistoryForCurrent bool
 	wake                  chan struct{}
@@ -66,6 +76,12 @@ func (p *Player) SetAutoPlayFunc(autoPlayFunc AutoPlayFunc) {
 	p.mu.Unlock()
 }
 
+func (p *Player) SetPrefetchFunc(prefetchFunc PrefetchFunc) {
+	p.mu.Lock()
+	p.prefetchFunc = prefetchFunc
+	p.mu.Unlock()
+}
+
 func (p *Player) SetOnChange(onChange func(Snapshot)) {
 	p.mu.Lock()
 	p.onChange = onChange
@@ -78,10 +94,18 @@ func (p *Player) Enqueue(tracks ...audio.Track) error {
 }
 
 func (p *Player) EnqueueWithPosition(tracks ...audio.Track) (int, error) {
+	return p.EnqueueWithPositionContext(context.Background(), tracks...)
+}
+
+func (p *Player) EnqueueWithPositionContext(ctx context.Context, tracks ...audio.Track) (int, error) {
 	if len(tracks) == 0 {
 		return 0, fmt.Errorf("no tracks to enqueue")
 	}
 	p.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		p.mu.Unlock()
+		return 0, err
+	}
 	if p.closed {
 		p.mu.Unlock()
 		return 0, fmt.Errorf("player is closed")
@@ -94,6 +118,7 @@ func (p *Player) EnqueueWithPosition(tracks ...audio.Track) (int, error) {
 	p.signal()
 	p.mu.Unlock()
 	p.notifyChange()
+	p.refreshPrefetch()
 	return position, nil
 }
 
@@ -105,6 +130,11 @@ func (p *Player) Skip() error {
 	}
 	if p.cancel != nil {
 		p.cancel()
+		if len(p.queue) == 0 || p.prefetchKey != p.queue[0].URL {
+			p.cancelPrefetchLocked()
+		}
+		p.prefetchReady = false
+		p.playbackGeneration++
 		p.mu.Unlock()
 		p.notifyChange()
 		return nil
@@ -126,6 +156,9 @@ func (p *Player) BeginConnectionMove() func() {
 		p.queue = append([]audio.Track{*p.current}, p.queue...)
 		p.skipHistoryForCurrent = true
 		p.cancel()
+		p.cancelPrefetchLocked()
+		p.prefetchReady = false
+		p.playbackGeneration++
 		p.paused.Store(false)
 	}
 	p.mu.Unlock()
@@ -171,11 +204,14 @@ func (p *Player) Previous() error {
 		}
 		p.skipHistoryForCurrent = true
 		p.cancel()
+		p.playbackGeneration++
 	} else {
 		p.queue = append([]audio.Track{previous}, p.queue...)
 		p.signal()
 	}
 	p.paused.Store(false)
+	p.cancelPrefetchLocked()
+	p.prefetchReady = false
 	p.mu.Unlock()
 	p.notifyChange()
 	return nil
@@ -258,6 +294,7 @@ func (p *Player) ShuffleQueue() int {
 	shuffled := len(p.queue)
 	p.mu.Unlock()
 	p.notifyChange()
+	p.refreshPrefetch()
 	return shuffled
 }
 
@@ -270,8 +307,11 @@ func (p *Player) Stop() {
 	p.loopTrack = false
 	p.autoPlay = false
 	p.volumeSink = nil
+	p.cancelPrefetchLocked()
+	p.prefetchReady = false
 	if p.cancel != nil {
 		p.cancel()
+		p.playbackGeneration++
 	}
 	p.mu.Unlock()
 	p.notifyChange()
@@ -290,7 +330,10 @@ func (p *Player) Close() {
 		p.queue = nil
 		if p.cancel != nil {
 			p.cancel()
+			p.playbackGeneration++
 		}
+		p.cancelPrefetchLocked()
+		p.prefetchReady = false
 		p.paused.Store(false)
 		close(p.done)
 		p.signal()
@@ -326,6 +369,12 @@ func (p *Player) run() {
 
 		track := p.queue[0]
 		p.queue = p.queue[1:]
+		if p.prefetchKey != track.URL {
+			p.cancelPrefetchLocked()
+		}
+		p.prefetchReady = false
+		p.playbackGeneration++
+		generation := p.playbackGeneration
 		ctx, cancel := context.WithCancel(context.Background())
 		p.current = &track
 		p.cancel = cancel
@@ -334,9 +383,13 @@ func (p *Player) run() {
 		p.mu.Unlock()
 
 		p.notifyChange()
+		p.refreshPrefetch()
 		err := p.play(ctx, track, audio.PlaybackControls{
 			IsPaused: p.paused.Load,
 			Volume:   p.currentVolume,
+			OnFirstFrame: func() {
+				p.markPrefetchReady(generation)
+			},
 			RegisterVolumeSink: func(sink func(float64) error) error {
 				return p.registerVolumeSink(ctx, sink)
 			},
@@ -394,6 +447,78 @@ func (p *Player) registerVolumeSink(ctx context.Context, sink func(float64) erro
 	return nil
 }
 
+func (p *Player) refreshPrefetch() {
+	p.mu.Lock()
+	if !p.closed && p.current != nil && !p.prefetchReady && p.prefetchKey == p.current.URL {
+		p.mu.Unlock()
+		return
+	}
+	if p.closed || p.current == nil || len(p.queue) == 0 || p.prefetchFunc == nil || p.queue[0].URL == "" {
+		p.cancelPrefetchLocked()
+		p.mu.Unlock()
+		return
+	}
+	if !p.prefetchReady {
+		p.mu.Unlock()
+		return
+	}
+
+	next := p.queue[0]
+	if (p.prefetchKey == next.URL && p.prefetchCancel != nil) || p.prefetchAttemptedKey == next.URL || p.prefetchedKey == next.URL {
+		p.mu.Unlock()
+		return
+	}
+	p.cancelPrefetchLocked()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	p.prefetchCancel = cancel
+	p.prefetchKey = next.URL
+	generation := p.prefetchGeneration
+	p.prefetchAttemptedKey = next.URL
+	p.prefetchedKey = ""
+	prefetch := p.prefetchFunc
+	p.mu.Unlock()
+
+	go func() {
+		err := prefetch(ctx, next)
+		completed := err == nil && ctx.Err() == nil
+		cancel()
+
+		p.mu.Lock()
+		if p.prefetchGeneration == generation && p.prefetchKey == next.URL {
+			p.prefetchCancel = nil
+			p.prefetchKey = ""
+			if completed {
+				p.prefetchedKey = next.URL
+			}
+		}
+		p.mu.Unlock()
+	}()
+}
+
+func (p *Player) markPrefetchReady(generation uint64) {
+	p.mu.Lock()
+	valid := !p.closed && p.current != nil && p.playbackGeneration == generation
+	if valid {
+		p.prefetchReady = true
+	}
+	p.mu.Unlock()
+	if valid {
+		p.notifyChange()
+		p.refreshPrefetch()
+	}
+}
+
+func (p *Player) cancelPrefetchLocked() {
+	p.prefetchGeneration++
+	if p.prefetchCancel != nil {
+		p.prefetchCancel()
+	}
+	p.prefetchCancel = nil
+	p.prefetchKey = ""
+	p.prefetchAttemptedKey = ""
+	p.prefetchedKey = ""
+}
+
 func (p *Player) enqueueAutoPlay(previous audio.Track, autoPlay AutoPlayFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -426,6 +551,7 @@ func (p *Player) snapshotLocked() Snapshot {
 	snapshot := Snapshot{
 		Queue:       append([]audio.Track(nil), p.queue...),
 		Paused:      p.paused.Load(),
+		Loading:     p.current != nil && !p.prefetchReady,
 		CanPrevious: p.current != nil || len(p.history) > 0,
 		LoopTrack:   p.loopTrack,
 		AutoPlay:    p.autoPlay,

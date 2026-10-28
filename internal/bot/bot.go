@@ -26,6 +26,8 @@ import (
 	"github.com/thomas-vilte/dave-go/session"
 )
 
+const maxConcurrentTrackPrefetches = 2
+
 type Bot struct {
 	cfg      config.Config
 	logger   *slog.Logger
@@ -33,6 +35,8 @@ type Bot struct {
 	resolver *audio.Resolver
 	streamer *audio.Streamer
 	spotify  *spotify.Client
+
+	prefetchSlots chan struct{}
 
 	mu              sync.Mutex
 	players         map[snowflake.ID]*player.Player
@@ -65,6 +69,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		logger:          logger,
 		resolver:        audio.NewResolver(),
 		streamer:        audio.NewStreamer(logger),
+		prefetchSlots:   make(chan struct{}, maxConcurrentTrackPrefetches),
 		players:         make(map[snowflake.ID]*player.Player),
 		playlistLoads:   make(map[snowflake.ID]map[uint64]context.CancelFunc),
 		connections:     make(map[snowflake.ID]voice.Conn),
@@ -78,6 +83,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 	}
 	application.resolver.CookiesFile = cfg.YTDLPCookiesFile
 	application.streamer.CookiesFile = cfg.YTDLPCookiesFile
+	application.streamer.Resolver = application.resolver
 	if cfg.SpotifyClientID != "" {
 		client, err := spotify.NewWithUserOAuth(
 			cfg.SpotifyClientID,
@@ -302,12 +308,14 @@ func (b *Bot) onMessage(event *events.GuildMessageCreate) {
 		b.stopCommand(event)
 	case "queue":
 		b.queueCommand(event)
+	case "remove", "move", "clearqueue", "skipto":
+		b.manageQueueCommand(event, command, args)
 	}
 }
 
 func isMusicCommand(command string) bool {
 	switch command {
-	case "join", "play", "skip", "previous", "pause", "shuffle", "stop", "leave", "queue":
+	case "join", "play", "skip", "previous", "pause", "shuffle", "stop", "leave", "queue", "remove", "move", "clearqueue", "skipto":
 		return true
 	default:
 		return false
@@ -396,14 +404,29 @@ func (b *Bot) playCommand(event *events.GuildMessageCreate, query string) {
 
 	go func() {
 		if err := b.resolveAndEnqueue(guildID, voiceChannelID, event.ChannelID, user.Username, user.ID.String(), query); err != nil {
-			b.sendChannelMessage(event.ChannelID, "No pude añadir la canción: "+err.Error())
+			b.logger.Error("play request failed", "guild_id", guildID)
 		}
 	}()
 }
 
-func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowflake.ID, username, requesterID, query string) error {
+func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowflake.ID, username, requesterID, query string) (resultErr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	stopTyping := b.startLoadingTyping(ctx, requestChannelID)
+	defer stopTyping()
+	var loadingMessage *discord.Message
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		content := "No pude añadir la canción: " + resultErr.Error()
+		if loadingMessage != nil {
+			if _, err := b.client.Rest.UpdateMessage(requestChannelID, loadingMessage.ID, discord.NewMessageUpdate().WithContent(content).WithEmbeds()); err == nil {
+				return
+			}
+		}
+		b.sendChannelMessage(requestChannelID, content)
+	}()
 	type resolveResult struct {
 		tracks        []audio.Track
 		pendingTracks []spotify.Track
@@ -426,6 +449,7 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 		joined <- err
 	}()
 	var tracks []audio.Track
+	loadingMessage, _ = b.client.Rest.CreateMessage(requestChannelID, loadingMusicMessage())
 	var pendingTracks []spotify.Track
 	totalTracks := 0
 	mediaResolved, voiceJoined := false, false
@@ -476,7 +500,13 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 	}
 
 	var confirmation *discord.Message
-	if len(pendingTracks) > 0 {
+	if loadingMessage != nil {
+		payload := queueConfirmationMessage(tracks[0], position, len(tracks))
+		if len(pendingTracks) > 0 {
+			payload = playlistQueueConfirmationMessage(tracks[0], position, totalTracks)
+		}
+		confirmation, err = b.client.Rest.UpdateMessage(requestChannelID, loadingMessage.ID, discord.NewMessageUpdate().WithContent("").WithEmbeds(payload.Embeds...))
+	} else if len(pendingTracks) > 0 {
 		confirmation, err = b.sendPlaylistQueueConfirmation(requestChannelID, tracks[0], position, totalTracks)
 	} else {
 		confirmation, err = b.sendQueueConfirmation(requestChannelID, tracks[0], position, len(tracks))
@@ -485,6 +515,9 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 		b.logger.Error("send queue confirmation", "guild_id", guildID, "error", err)
 	} else if err := b.showControlPanel(guildID, confirmation); err != nil {
 		b.logger.Error("show playback control panel", "guild_id", guildID, "error", err)
+	}
+	if position == 1 {
+		waitForPlaybackStart(ctx, p.Snapshot, tracks[0].URL)
 	}
 	return nil
 }
@@ -507,7 +540,7 @@ func (b *Bot) sendPlaylistQueueConfirmation(channelID snowflake.ID, track audio.
 
 func queueConfirmationMessage(track audio.Track, position, addedCount int) discord.MessageCreate {
 	title := fmt.Sprintf("🎵 Song Added to Queue #%d", position)
-	trackTitle := track.Title
+	trackTitle := displayMusicTitle(track)
 	if trackTitle == "" {
 		trackTitle = "Untitled track"
 	}
@@ -528,7 +561,7 @@ func queueConfirmationMessage(track audio.Track, position, addedCount int) disco
 }
 
 func playlistQueueConfirmationMessage(track audio.Track, position, totalCount int) discord.MessageCreate {
-	trackTitle := track.Title
+	trackTitle := displayMusicTitle(track)
 	if trackTitle == "" {
 		trackTitle = "Untitled track"
 	}
@@ -577,7 +610,8 @@ func (b *Bot) resolveQuery(ctx context.Context, query, requester, requesterID st
 				}
 				track.Requester = requester
 				track.RequesterID = requesterID
-				if track.Artist == "" {
+				track.SongTitle = spotifyTrack.Name
+				if spotifyTrack.Artist != "" {
 					track.Artist = spotifyTrack.Artist
 				}
 				return track, nil
@@ -645,7 +679,8 @@ func (b *Bot) loadRemainingSpotifyTracks(
 		}
 		track.Requester = requester
 		track.RequesterID = requesterID
-		if track.Artist == "" {
+		track.SongTitle = spotifyTrack.Name
+		if spotifyTrack.Artist != "" {
 			track.Artist = spotifyTrack.Artist
 		}
 		return track, nil
@@ -654,7 +689,7 @@ func (b *Bot) loadRemainingSpotifyTracks(
 		if p == nil {
 			return fmt.Errorf("player is unavailable")
 		}
-		if _, err := p.EnqueueWithPosition(resolved...); err != nil {
+		if _, err := p.EnqueueWithPositionContext(ctx, resolved...); err != nil {
 			return err
 		}
 		b.cancelLeaveTimer(guildID)
@@ -767,14 +802,14 @@ func (b *Bot) queueCommand(event *events.GuildMessageCreate) {
 	snapshot := p.Snapshot()
 	lines := make([]string, 0, 11)
 	if snapshot.Current != nil {
-		lines = append(lines, "**Reproduciendo:** "+snapshot.Current.Title)
+		lines = append(lines, "**Reproduciendo:** "+displayMusicTitle(*snapshot.Current))
 	}
 	for index, track := range snapshot.Queue {
 		if index == 10 {
 			lines = append(lines, fmt.Sprintf("… y %d canciones más.", len(snapshot.Queue)-index))
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s", index+1, track.Title))
+		lines = append(lines, fmt.Sprintf("%d. %s", index+1, displayMusicTitle(track)))
 	}
 	if len(lines) == 0 {
 		b.sendMessage(event, "La cola está vacía.")
@@ -1048,8 +1083,10 @@ func renderControlPanel(note string, snapshot player.Snapshot) string {
 		content.WriteString("\n")
 	}
 	switch {
+	case snapshot.Current != nil && snapshot.Loading:
+		fmt.Fprintf(&content, "⏳ **Cargando audio:** %s\n", displayMusicTitle(*snapshot.Current))
 	case snapshot.Current != nil:
-		fmt.Fprintf(&content, "🎵 **Reproduciendo:** %s\n", snapshot.Current.Title)
+		fmt.Fprintf(&content, "🎵 **Reproduciendo:** %s\n", displayMusicTitle(*snapshot.Current))
 	case len(snapshot.Queue) > 0:
 		content.WriteString("⏳ Preparando la siguiente canción...\n")
 	default:
@@ -1065,7 +1102,7 @@ func renderControlPanel(note string, snapshot player.Snapshot) string {
 				fmt.Fprintf(&content, "… y %d más\n", len(snapshot.Queue)-index)
 				break
 			}
-			fmt.Fprintf(&content, "%d. %s\n", index+1, track.Title)
+			fmt.Fprintf(&content, "%d. %s\n", index+1, displayMusicTitle(track))
 		}
 	}
 	loopStatus, autoplayStatus := "Desactivado", "Desactivado"
@@ -1089,9 +1126,9 @@ func stoppedPlaybackEmbed(stoppedBy snowflake.ID, track *audio.Track) discord.Em
 	if track != nil && track.Title != "" {
 		description.WriteByte(' ')
 		if track.URL != "" {
-			fmt.Fprintf(&description, "[%s](%s)", escapeMarkdownLink(track.Title), track.URL)
+			fmt.Fprintf(&description, "[%s](%s)", escapeMarkdownLink(displayMusicTitle(*track)), track.URL)
 		} else {
-			description.WriteString(escapeMarkdownLink(track.Title))
+			description.WriteString(escapeMarkdownLink(displayMusicTitle(*track)))
 		}
 	}
 	return discord.NewEmbed().
@@ -1106,7 +1143,11 @@ func renderControlEmbed(note string, snapshot player.Snapshot) discord.Embed {
 		description.WriteString("\n")
 	}
 	if snapshot.Current != nil {
-		fmt.Fprintf(&description, "🎵 %s", formatTrackTitle(*snapshot.Current))
+		if snapshot.Loading {
+			fmt.Fprintf(&description, "⏳ Cargando audio: %s", formatTrackTitle(*snapshot.Current))
+		} else {
+			fmt.Fprintf(&description, "🎵 %s", formatTrackTitle(*snapshot.Current))
+		}
 	} else if len(snapshot.Queue) > 0 {
 		fmt.Fprintf(&description, "⏳ Preparing: %s", formatTrackTitle(snapshot.Queue[0]))
 	} else if note == "" {
@@ -1126,7 +1167,7 @@ func renderControlEmbed(note string, snapshot player.Snapshot) discord.Embed {
 				fmt.Fprintf(&description, "\n… and %d more", len(snapshot.Queue)-queueStart-index)
 				break
 			}
-			fmt.Fprintf(&description, "\n%d. %s", index+1, track.Title)
+			fmt.Fprintf(&description, "\n%d. %s", index+1, displayMusicTitle(track))
 		}
 	}
 	embed := discord.NewEmbed().
@@ -1137,7 +1178,7 @@ func renderControlEmbed(note string, snapshot player.Snapshot) discord.Embed {
 	if track := displayTrack(snapshot); track != nil {
 		duration = formatTrackDuration(track.Duration)
 		if track.Artist != "" {
-			artist = truncateText(track.Artist, 1024)
+			artist = truncateText(cleanMusicArtist(track.Artist), 1024)
 		}
 	}
 	embed = embed.
@@ -1196,9 +1237,9 @@ func formatRequesterLink(track *audio.Track) string {
 
 func formatTrackTitle(track audio.Track) string {
 	if track.URL == "" {
-		return fmt.Sprintf("`%s`", escapeInlineCode(track.Title))
+		return fmt.Sprintf("`%s`", escapeInlineCode(displayMusicTitle(track)))
 	}
-	return fmt.Sprintf("[%s](%s)", escapeMarkdownLink(track.Title), track.URL)
+	return fmt.Sprintf("[%s](%s)", escapeMarkdownLink(displayMusicTitle(track)), track.URL)
 }
 
 func formatTrackDuration(duration time.Duration) string {
@@ -1241,14 +1282,14 @@ func truncateText(value string, limit int) string {
 func renderPlaylist(snapshot player.Snapshot) string {
 	lines := make([]string, 0, len(snapshot.Queue)+1)
 	if snapshot.Current != nil {
-		lines = append(lines, "🎵 **Reproduciendo:** "+snapshot.Current.Title)
+		lines = append(lines, "🎵 **Reproduciendo:** "+displayMusicTitle(*snapshot.Current))
 	}
 	for index, track := range snapshot.Queue {
 		if index == 20 {
 			lines = append(lines, fmt.Sprintf("… y %d canciones más.", len(snapshot.Queue)-index))
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s", index+1, track.Title))
+		lines = append(lines, fmt.Sprintf("%d. %s", index+1, displayMusicTitle(track)))
 	}
 	if len(lines) == 0 {
 		return "La cola está vacía."
@@ -1343,6 +1384,24 @@ func (b *Bot) getPlayer(guildID snowflake.ID) *player.Player {
 		}
 		track.Requester = "AutoPlay"
 		return track, nil
+	})
+	p.SetPrefetchFunc(func(ctx context.Context, next audio.Track) error {
+		select {
+		case b.prefetchSlots <- struct{}{}:
+			defer func() { <-b.prefetchSlots }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		startedAt := time.Now()
+		err := b.resolver.Prepare(ctx, next.URL)
+		if ctx.Err() == nil {
+			if err != nil {
+				b.logger.Debug("next track metadata prefetch failed", "elapsed", time.Since(startedAt))
+			} else {
+				b.logger.Info("next track metadata prefetched", "elapsed", time.Since(startedAt))
+			}
+		}
+		return err
 	})
 	b.players[guildID] = p
 	b.mu.Unlock()

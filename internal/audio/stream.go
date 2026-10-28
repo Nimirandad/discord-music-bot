@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -21,6 +22,20 @@ import (
 )
 
 const sampleRate = 48000
+
+type firstByteReader struct {
+	io.Reader
+	onFirst func()
+	once    sync.Once
+}
+
+func (r *firstByteReader) Read(data []byte) (int, error) {
+	n, err := r.Reader.Read(data)
+	if n > 0 {
+		r.once.Do(r.onFirst)
+	}
+	return n, err
+}
 
 type Streamer struct {
 	YTDLPPath   string
@@ -41,18 +56,60 @@ type PlaybackControls struct {
 	IsPaused           func() bool
 	HoldFrames         func() bool
 	Volume             func() float64
+	OnFirstFrame       func()
 	RegisterVolumeSink func(func(float64) error) error
 }
 
 func (s *Streamer) Play(ctx context.Context, connection voice.Conn, track Track, controls PlaybackControls) error {
+	var prepared []byte
+	if s.Resolver != nil {
+		var err error
+		prepared, err = s.Resolver.awaitPrepared(ctx, track.URL)
+		if err != nil {
+			return err
+		}
+	}
+	return playPreparedOrSource(ctx, prepared, func(data []byte) (bool, error) {
+		if len(prepared) > 0 && len(data) == 0 {
+			s.Logger.Info("prepared media failed before audio; retrying source")
+		}
+		delivered := false
+		err := s.playStream(ctx, connection, track, controls, data, &delivered)
+		return delivered, err
+	})
+}
+
+func playPreparedOrSource(ctx context.Context, prepared []byte, play func([]byte) (bool, error)) error {
+	delivered, err := play(prepared)
+	if err != nil && len(prepared) > 0 && !delivered && ctx.Err() == nil {
+		_, err = play(nil)
+	}
+	return err
+}
+
+func (s *Streamer) playStream(ctx context.Context, connection voice.Conn, track Track, controls PlaybackControls, prepared []byte, delivered *bool) error {
 	startedAt := time.Now()
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	args := []string{"--no-warnings", "--quiet", "--no-cache-dir", "--no-playlist", "-f", "bestaudio/best", "-o", "-"}
+	args := []string{"--no-warnings", "--quiet", "--no-playlist", "-f", "bestaudio/best", "-o", "-"}
 	args = appendYTDLPCookies(args, s.CookiesFile)
 	args = appendYTDLPPOProvider(args)
-	args = append(args, track.URL)
+	if len(prepared) > 0 {
+		info, err := os.CreateTemp("", "discord-music-info-*.json")
+		if err != nil {
+			return fmt.Errorf("create prepared media file: %w", err)
+		}
+		defer os.Remove(info.Name())
+		_, writeErr := info.Write(prepared)
+		closeErr := info.Close()
+		if writeErr != nil || closeErr != nil {
+			return fmt.Errorf("write prepared media file: %w", errors.Join(writeErr, closeErr))
+		}
+		args = append(args, "--load-info-json", info.Name())
+	} else {
+		args = append(args, track.URL)
+	}
 	downloader := exec.CommandContext(streamCtx, s.YTDLPPath, args...)
 	downloaderOutput, err := downloader.StdoutPipe()
 	if err != nil {
@@ -68,12 +125,15 @@ func (s *Streamer) Play(ctx context.Context, connection voice.Conn, track Track,
 	filter := ffmpegVolumeFilter(volumePort)
 	transcoder := exec.CommandContext(streamCtx, s.FFmpegPath,
 		"-hide_banner", "-loglevel", "error",
+		"-analyzeduration", "500000", "-probesize", "65536",
 		"-i", "pipe:0", "-vn",
 		"-af", filter,
 		"-c:a", "libopus", "-application", "audio", "-frame_duration", "20",
-		"-ar", fmt.Sprint(sampleRate), "-ac", "2", "-b:a", "128k", "-f", "ogg", "pipe:1",
+		"-ar", fmt.Sprint(sampleRate), "-ac", "2", "-b:a", "128k", "-f", "ogg", "-page_duration", "20000", "-flush_packets", "1", "pipe:1",
 	)
-	transcoder.Stdin = downloaderOutput
+	transcoder.Stdin = &firstByteReader{Reader: downloaderOutput, onFirst: func() {
+		s.Logger.Info("first source audio bytes received", "elapsed", time.Since(startedAt), "prepared", len(prepared) > 0)
+	}}
 	transcoderOutput, err := transcoder.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("open ffmpeg output: %w", err)
@@ -106,7 +166,7 @@ func (s *Streamer) Play(ctx context.Context, connection voice.Conn, track Track,
 	}
 	provider := newOggOpusProvider(transcoderOutput, controls, pauser.SetPaused, volumeControl.SetVolume, volumeControl.AppliedVolume)
 	provider.logger = s.Logger
-	s.Logger.Info("audio stream started", "track", track.Title)
+	s.Logger.Info("audio stream started", "track", track.Title, "prepared", len(prepared) > 0)
 	connection.SetOpusFrameProvider(provider)
 	select {
 	case <-provider.Done():
@@ -117,6 +177,7 @@ func (s *Streamer) Play(ctx context.Context, connection voice.Conn, track Track,
 	}
 
 	providerErr := provider.Err()
+	*delivered = provider.frameCount.Load() > 0
 	if providerErr != nil && !errors.Is(providerErr, io.EOF) {
 		cancel()
 	}
@@ -396,8 +457,13 @@ func (p *oggOpusProvider) ProvideOpusFrame() ([]byte, error) {
 		p.once.Do(func() { close(p.done) })
 		return nil, err
 	}
-	if p.frameCount.Add(1) == 1 && p.logger != nil {
-		p.logger.Info("voice audio sender received its first music Opus frame", "elapsed", time.Since(p.startedAt))
+	if p.frameCount.Add(1) == 1 {
+		if p.logger != nil {
+			p.logger.Info("voice audio sender received its first music Opus frame", "elapsed", time.Since(p.startedAt))
+		}
+		if p.controls.OnFirstFrame != nil {
+			p.controls.OnFirstFrame()
+		}
 	}
 	p.byteCount.Add(uint64(len(packet)))
 	if p.controls.Volume != nil && p.setVolume != nil && p.appliedVolume != nil {

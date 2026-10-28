@@ -30,6 +30,7 @@ id_ed25519
 # Build output and local runtime files
 /bin/
 /dist/
+Makefile
 *.exe
 *.log
 *.tmp
