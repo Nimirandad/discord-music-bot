@@ -1,28 +1,28 @@
 # Discord Music Bot (Go)
 
-Bot de música para Discord implementado en Go. Usa comandos de texto con prefijo `!`, mantiene una cola concurrente por servidor y reproduce audio de YouTube mediante `yt-dlp`, `ffmpeg` y Opus. Los enlaces de pistas y playlists públicas de Spotify se convierten en búsquedas de YouTube usando metadatos de Spotify.
+Bot de música para Discord implementado en Go. Usa comandos slash, mantiene una cola concurrente por servidor y reproduce audio de YouTube mediante `yt-dlp`, `ffmpeg` y Opus. Los enlaces de pistas y playlists públicas de Spotify se convierten en búsquedas de YouTube usando metadatos de Spotify.
 
 ## Funciones
 
-- La actividad del bot muestra “Escuchando !play”. Los comandos están disponibles como mensajes con prefijo `!` y como comandos slash de Discord.
-- `!play cancion`: URL de YouTube, enlace Spotify de pista/playlist o búsqueda de texto.
-- `!help`, `!ayuda` o `/help`: muestra la lista de comandos y su uso en cualquier canal de texto.
-- `!join`: conecta o mueve el bot al canal de voz donde estás; si había una canción activa, la reinicia en el canal nuevo.
-- Los comandos de música quedan vinculados al canal de texto del primer `!play`; si se envían desde otro canal, el bot indica dónde usarlos. `!stop` o `!leave` libera el canal asignado.
-- Las playlists de Spotify comienzan a reproducirse al resolver la primera canción; el resto se resuelve en grupos ordenados en segundo plano. `!stop` cancela esa carga.
-- `!skip`: cancela la pista activa y continúa con la siguiente.
-- `!pause`: alterna pausa/reanudación.
-- `!previous`: vuelve a la canción anterior; si no hay historial, reinicia la actual.
-- `!shuffle`: mezcla las canciones que están en espera.
-- `!queue [página]` o `/queue`: muestra diez canciones por página, la canción actual y la duración total de la cola. Para cambiar de página usa, por ejemplo, `!queue 2` o `/queue pagina:2`.
-- `!remove <posición>`: quita una canción en espera.
-- `!move <origen> <destino>`: mueve una canción a otra posición de la cola.
-- `!clearqueue confirmar` o `/clearqueue` con `confirmar` activado: confirma antes de vaciar las canciones en espera y cancelar la carga pendiente de playlists; conserva la canción actual y AutoPlay.
-- `!skipto <posición>`: salta a esa canción en espera, descartando las anteriores. Las posiciones de estos comandos empiezan en 1 y coinciden con `!queue`; no incluyen la canción actual.
-- `!stop` y `!leave`: limpian la cola y desconectan el bot; el panel queda como confirmación con quien detuvo la música y el enlace de la pista.
+- La actividad del bot muestra “Escuchando /play”. Los comandos se usan desde el cuadro de chat de Discord escribiendo `/` y seleccionando el comando.
+- `/play consulta:<canción>`: URL de YouTube, enlace Spotify de pista/playlist o búsqueda de texto.
+- `/help`: muestra la lista de comandos y su uso en cualquier canal de texto.
+- `/join`: conecta o mueve el bot al canal de voz donde estás; si había una canción activa, la reinicia en el canal nuevo.
+- Los comandos de música quedan vinculados al canal de texto del primer `/play`; si se envían desde otro canal, el bot indica dónde usarlos. `/stop` o `/leave` libera el canal asignado.
+- Las playlists de Spotify comienzan a reproducirse al resolver la primera canción; el resto se resuelve en grupos ordenados en segundo plano. `/stop` cancela esa carga.
+- `/skip`: cancela la pista activa y continúa con la siguiente.
+- `/pause`: alterna pausa/reanudación.
+- `/previous`: vuelve a la canción anterior; si no hay historial, reinicia la actual.
+- `/shuffle`: mezcla las canciones que están en espera.
+- `/queue pagina:<n>`: muestra diez canciones por página, la canción actual y la duración total de la cola. Para cambiar de página usa, por ejemplo, `/queue pagina:2`.
+- `/remove posicion:<n>`: quita una canción en espera.
+- `/move origen:<n> destino:<n>`: mueve una canción a otra posición de la cola.
+- `/clearqueue confirmar:<sí>`: confirma antes de vaciar las canciones en espera y cancelar la carga pendiente de playlists; conserva la canción actual y AutoPlay.
+- `/skipto posicion:<n>`: salta a esa canción en espera, descartando las anteriores. Las posiciones empiezan en 1 y coinciden con `/queue`; no incluyen la canción actual.
+- `/stop` y `/leave`: limpian la cola y desconectan el bot; el panel queda como confirmación con quien detuvo la música y el enlace de la pista.
 - Las búsquedas de audio consultan hasta cinco resultados de YouTube en modo plano, añaden `lyrics` cuando corresponde y priorizan títulos lyrics/letras, audio y visualizer. Se descartan títulos identificados como videoclip oficial; la clasificación depende del título publicado y puede equivocarse. Las URL directas empiezan con el video enlazado. Para Spotify, se conserva primero artista y título; las variantes de búsqueda quedan como fallback.
 - Cuando la canción actual ya entrega audio, el bot extrae anticipadamente la fuente de la siguiente y conserva el resultado para reproducirla con `--load-info-json`, evitando repetir la extracción. Se reutiliza durante cinco minutos, con un máximo de ocho pistas y dos extracciones simultáneas. Shuffle prepara la nueva siguiente canción; Skip conserva la extracción si corresponde a la pista que pasa a reproducirse y espera el trabajo que ya esté en curso. Stop y Previous cancelan los trabajos pendientes. Una pista nueva todavía puede requerir extracción si se salta inmediatamente. FFmpeg usa menos análisis inicial y páginas Ogg cortas; los logs distinguen el primer byte de la fuente del primer frame Opus para medir la mejora real.
-- Cada `!play` activa el indicador de escritura y muestra un mensaje de carga mientras busca y conecta la voz. Ese mismo mensaje se transforma en el panel persistente, que indica «Cargando audio» hasta recibir el primer frame de música. Los títulos visibles omiten etiquetas como Official Video o Lyrics; para Spotify se usan el nombre y artista originales. En el panel, la pista enlaza a su fuente y “Requested By” enlaza al perfil del solicitante; también se muestran duración y autor. Sus botones permiten volver, pausar/reanudar, saltar, mezclar, repetir, activar AutoPlay, detener y consultar la playlist de forma privada. Los botones permanecen habilitados; si una acción no está disponible, el bot explica el motivo. Loop y AutoPlay comienzan desactivados.
+- Cada `/play` activa el indicador de escritura y muestra un mensaje de carga mientras busca y conecta la voz. Ese mismo mensaje se transforma en el panel persistente, que indica «Cargando audio» hasta recibir el primer frame de música. Los títulos visibles omiten etiquetas como Official Video o Lyrics; para Spotify se usan el nombre y artista originales. En el panel, la pista enlaza a su fuente y “Requested By” enlaza al perfil del solicitante; también se muestran duración y autor. Sus botones permiten volver, pausar/reanudar, saltar, mezclar, repetir, activar AutoPlay, detener y consultar la playlist de forma privada. Los botones permanecen habilitados; si una acción no está disponible, el bot explica el motivo. Loop y AutoPlay comienzan desactivados.
 - Pausar no tiene un límite de tiempo configurado: el bot suspende temporalmente `yt-dlp` y FFmpeg mientras envía silencio a Discord, y los reanuda al quitar la pausa.
 - Desconexión automática después de `AUTO_LEAVE_SECONDS` sin personas en el canal.
 - Endpoints HTTP `/healthz` y `/readyz` para Docker/Kubernetes.
@@ -41,10 +41,10 @@ Las playlists Spotify se limitan a 500 canciones por solicitud. Si Spotify devue
 
 1. Crea una aplicación en [Discord Developer Portal](https://discord.com/developers/applications).
 2. En **Bot**, crea el bot y copia el token. No publiques ni compartas ese token.
-3. En **OAuth2 > URL Generator**, selecciona el scope `bot`. Invítalo con permisos para ver canales, leer y enviar mensajes, y conectarse y hablar en canales de voz.
-4. En **Bot > Privileged Gateway Intents**, habilita **Message Content Intent**. El bot lo necesita para reconocer mensajes con prefijo como `!play`; `Guilds`, `GuildVoiceStates` y `GuildMessages` son intents no privilegiados.
+3. En **OAuth2 > URL Generator**, selecciona el scope `bot` y los permisos para ver canales, enviar mensajes, usar comandos de aplicaciones y conectarse y hablar en canales de voz. El scope `bot` incluye autorización para comandos de aplicación.
+4. No hace falta habilitar **Message Content Intent**: el bot solo recibe comandos slash e interacciones de botones.
 
-Al iniciar, el bot registra y sincroniza los comandos slash globales de música. Discord puede tardar un tiempo en mostrarlos después de la primera actualización; también puedes seguir escribiendo los comandos con prefijo `!` en el canal de texto.
+Al iniciar, el bot registra y sincroniza los comandos slash globales de música. Si no aparecen, confirma que estás en el servidor donde está instalada esta misma aplicación y que el bot inició correctamente; revisa **Server Settings > Integrations > MusicBot** y que el permiso **Use Application Commands** esté habilitado para el usuario y canal. La sincronización global de Discord puede tardar unos minutos. El bot ya no procesa comandos con prefijo `!`.
 
 ## Credenciales de Spotify
 

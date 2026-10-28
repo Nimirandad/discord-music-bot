@@ -10,25 +10,6 @@ import (
 	"github.com/disgoorg/disgo/discord"
 )
 
-func TestControlPanelRendersPlaybackAndQueue(t *testing.T) {
-	snapshot := player.Snapshot{
-		Current:     &audio.Track{Title: "Current track"},
-		Queue:       []audio.Track{{Title: "Next track"}},
-		Paused:      true,
-		CanPrevious: true,
-		Volume:      1.2,
-		LoopTrack:   true,
-		AutoPlay:    true,
-	}
-
-	content := renderControlPanel("Added a song.", snapshot)
-	for _, want := range []string{"Added a song.", "Current track", "Pausado", "Next track", "120%", "Loop: Activado", "AutoPlay: Activado"} {
-		if !strings.Contains(content, want) {
-			t.Errorf("renderControlPanel() = %q, want it to contain %q", content, want)
-		}
-	}
-}
-
 func TestControlButtonsReflectPlayerState(t *testing.T) {
 	snapshot := player.Snapshot{
 		Current:     &audio.Track{Title: "Current track"},

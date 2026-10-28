@@ -10,28 +10,6 @@ import (
 	"discord-music-bot/internal/player"
 )
 
-func TestParseQueuePage(t *testing.T) {
-	for _, test := range []struct {
-		args string
-		want int
-		bad  bool
-	}{
-		{args: "", want: 1},
-		{args: "2", want: 2},
-		{args: "0", bad: true},
-		{args: "first", bad: true},
-		{args: "2 3", bad: true},
-	} {
-		got, err := parseQueuePage(test.args)
-		if test.bad && err == nil {
-			t.Errorf("parseQueuePage(%q) should fail", test.args)
-		}
-		if !test.bad && (err != nil || got != test.want) {
-			t.Errorf("parseQueuePage(%q) = %d, %v; want %d", test.args, got, err, test.want)
-		}
-	}
-}
-
 func TestRenderQueuePaginatesAndShowsTotalDuration(t *testing.T) {
 	queue := make([]audio.Track, 12)
 	for i := range queue {

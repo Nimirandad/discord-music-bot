@@ -44,6 +44,10 @@ func slashCommands() []discord.ApplicationCommandCreate {
 
 func intPointer(value int) *int { return &value }
 
+func commandChannelMatches(assignedChannelID, incomingChannelID snowflake.ID) bool {
+	return assignedChannelID == 0 || assignedChannelID == incomingChannelID
+}
+
 func (b *Bot) onApplicationCommand(event *events.ApplicationCommandInteractionCreate) {
 	data := event.SlashCommandInteractionData()
 	if data.CommandName() == "help" {

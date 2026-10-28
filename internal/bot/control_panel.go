@@ -71,7 +71,7 @@ func (b *Bot) onComponent(event *events.ComponentInteractionCreate) {
 	voiceChannelID := b.channels[*guildID]
 	b.mu.Unlock()
 	if !exists || panel.messageID != event.Message.ID {
-		b.componentError(event, "Este panel ya no está activo. Usa `!play` para crear uno nuevo.")
+		b.componentError(event, "Este panel ya no está activo. Usa `/play` para crear uno nuevo.")
 		return
 	}
 
@@ -270,46 +270,6 @@ func truncateDiscordContent(content string) string {
 	return content
 }
 
-func renderControlPanel(note string, snapshot player.Snapshot) string {
-	var content strings.Builder
-	if note != "" {
-		content.WriteString(note)
-		content.WriteString("\n")
-	}
-	switch {
-	case snapshot.Current != nil && snapshot.Loading:
-		fmt.Fprintf(&content, "⏳ **Cargando audio:** %s\n", displayMusicTitle(*snapshot.Current))
-	case snapshot.Current != nil:
-		fmt.Fprintf(&content, "🎵 **Reproduciendo:** %s\n", displayMusicTitle(*snapshot.Current))
-	case len(snapshot.Queue) > 0:
-		content.WriteString("⏳ Preparando la siguiente canción...\n")
-	default:
-		content.WriteString("La reproducción está detenida. Usa `!play` para agregar canciones.\n")
-	}
-	if snapshot.Paused {
-		content.WriteString("⏸ Pausado\n")
-	}
-	if len(snapshot.Queue) > 0 {
-		fmt.Fprintf(&content, "\n**En espera (%d):**\n", len(snapshot.Queue))
-		for index, track := range snapshot.Queue {
-			if index == 5 {
-				fmt.Fprintf(&content, "… y %d más\n", len(snapshot.Queue)-index)
-				break
-			}
-			fmt.Fprintf(&content, "%d. %s\n", index+1, displayMusicTitle(track))
-		}
-	}
-	loopStatus, autoplayStatus := "Desactivado", "Desactivado"
-	if snapshot.LoopTrack {
-		loopStatus = "Activado"
-	}
-	if snapshot.AutoPlay {
-		autoplayStatus = "Activado"
-	}
-	fmt.Fprintf(&content, "\n🔊 **Volumen:** %.0f%% · 🔁 Loop: %s · 🔄 AutoPlay: %s\n", snapshot.Volume*100, loopStatus, autoplayStatus)
-	return strings.TrimSpace(content.String())
-}
-
 func stoppedPlaybackEmbed(stoppedBy snowflake.ID, track *audio.Track) discord.Embed {
 	var description strings.Builder
 	if stoppedBy != 0 {
@@ -345,7 +305,7 @@ func renderControlEmbed(note string, snapshot player.Snapshot) discord.Embed {
 	} else if len(snapshot.Queue) > 0 {
 		fmt.Fprintf(&description, "⏳ Preparing: %s", formatTrackTitle(snapshot.Queue[0]))
 	} else if note == "" {
-		description.WriteString("Use `!play` to add a song.")
+		description.WriteString("Use `/play` to add a song.")
 	}
 	if snapshot.Paused {
 		description.WriteString("\n⏸ Paused")

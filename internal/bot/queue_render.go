@@ -2,7 +2,6 @@ package bot
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -10,21 +9,6 @@ import (
 )
 
 const queuePageSize = 10
-
-func parseQueuePage(args string) (int, error) {
-	fields := strings.Fields(args)
-	if len(fields) == 0 {
-		return 1, nil
-	}
-	if len(fields) != 1 {
-		return 0, fmt.Errorf("Uso: `!queue [página]`. Las páginas empiezan en 1.")
-	}
-	page, err := strconv.Atoi(fields[0])
-	if err != nil || page < 1 {
-		return 0, fmt.Errorf("Indica una página entera desde 1, como `!queue 2`.")
-	}
-	return page, nil
-}
 
 func renderQueue(snapshot player.Snapshot, page int) (string, error) {
 	if page < 1 {
@@ -35,7 +19,7 @@ func renderQueue(snapshot player.Snapshot, page int) (string, error) {
 		totalPages = 1
 	}
 	if page > totalPages {
-		return "", fmt.Errorf("La cola tiene %d página(s); usa `!queue %d` o una página menor.", totalPages, totalPages)
+		return "", fmt.Errorf("La cola tiene %d página(s); usa `/queue pagina:%d` o una página menor.", totalPages, totalPages)
 	}
 
 	lines := make([]string, 0, queuePageSize+4)

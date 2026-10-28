@@ -15,51 +15,6 @@ import (
 	"discord-music-bot/internal/spotify"
 )
 
-func TestParseCommand(t *testing.T) {
-	tests := []struct {
-		name        string
-		content     string
-		wantCommand string
-		wantArgs    string
-		wantOK      bool
-	}{
-		{name: "play search", content: "!play  Artist - Track ", wantCommand: "play", wantArgs: "Artist - Track", wantOK: true},
-		{name: "case insensitive command", content: "!QUEUE", wantCommand: "queue", wantOK: true},
-		{name: "join", content: "!join", wantCommand: "join", wantOK: true},
-		{name: "requires prefix", content: "/play song"},
-		{name: "ignores empty prefix", content: "!   "},
-		{name: "does not accept prefix inside text", content: "hello !skip"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			command, args, ok := parseCommand(test.content)
-			if command != test.wantCommand || args != test.wantArgs || ok != test.wantOK {
-				t.Fatalf("parseCommand(%q) = (%q, %q, %t), want (%q, %q, %t)",
-					test.content, command, args, ok, test.wantCommand, test.wantArgs, test.wantOK)
-			}
-		})
-	}
-}
-
-func TestIsDuplicatePlayCommand(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{input: "!play https://youtube.com/watch?v=example", want: true},
-		{input: "  !PLAY song", want: true},
-		{input: "play song", want: false},
-		{input: "!playful song", want: false},
-		{input: "Artist - Track", want: false},
-	}
-	for _, test := range tests {
-		if got := isDuplicatePlayCommand(test.input); got != test.want {
-			t.Errorf("isDuplicatePlayCommand(%q) = %t, want %t", test.input, got, test.want)
-		}
-	}
-}
-
 func TestResolveSpotifyTracksKeepsPlaylistOrderAndBoundsConcurrency(t *testing.T) {
 	tracks := make([]spotify.Track, 12)
 	for index := range tracks {

@@ -227,12 +227,6 @@ func (b *Bot) stopGuildWithActor(guildID, stoppedBy snowflake.ID) bool {
 	return false
 }
 
-func (b *Bot) sendStoppedPlaybackMessage(channelID, stoppedBy snowflake.ID, track *audio.Track) {
-	if _, err := b.client.Rest.CreateMessage(channelID, discord.NewMessageCreate().WithEmbeds(stoppedPlaybackEmbed(stoppedBy, track))); err != nil {
-		b.logger.Error("send stopped playback message", "channel_id", channelID, "error", err)
-	}
-}
-
 func (b *Bot) onVoiceStateUpdate(event *events.GuildVoiceStateUpdate) {
 	state := event.VoiceState
 	if state.UserID == event.Client().ID() {

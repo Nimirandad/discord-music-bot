@@ -99,8 +99,6 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 		bot.WithGatewayConfigOpts(gateway.WithIntents(
 			gateway.IntentGuilds,
 			gateway.IntentGuildVoiceStates,
-			gateway.IntentGuildMessages,
-			gateway.IntentMessageContent,
 		)),
 		bot.WithCacheConfigOpts(cache.WithCaches(cache.FlagGuilds, cache.FlagVoiceStates)),
 		bot.WithVoiceManagerConfigOpts(
@@ -124,7 +122,6 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 			}),
 			voice.WithDaveSessionLogger(logger),
 		),
-		bot.WithEventListenerFunc(application.onMessage),
 		bot.WithEventListenerFunc(application.onApplicationCommand),
 		bot.WithEventListenerFunc(application.onComponent),
 		bot.WithEventListenerFunc(application.onVoiceStateUpdate),
@@ -153,13 +150,14 @@ func (b *Bot) Run(ctx context.Context) error {
 		_ = server.Close()
 		return fmt.Errorf("open Discord Gateway: %w", err)
 	}
-	if err := b.client.SetPresence(ctx, gateway.WithListeningActivity("!play")); err != nil {
+	if err := b.client.SetPresence(ctx, gateway.WithListeningActivity("/play")); err != nil {
 		b.logger.Error("set listening activity", "error", err)
 	}
 	if _, err := b.client.Rest.SetGlobalCommands(b.client.ApplicationID, slashCommands()); err != nil {
 		b.shutdown(server)
 		return fmt.Errorf("register Discord slash commands: %w", err)
 	}
+	b.logger.Info("registered global Discord slash commands", "count", len(slashCommands()))
 	b.mu.Lock()
 	b.ready = true
 	b.mu.Unlock()

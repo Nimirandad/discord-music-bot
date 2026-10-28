@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Positions are one-based and refer only to waiting tracks, as shown by !queue.
+// Positions are one-based and refer only to waiting tracks, as shown by /queue.
 func (p *Player) queuePositionLocked(position int) error {
 	if p.closed {
 		return fmt.Errorf("el reproductor está cerrado")
