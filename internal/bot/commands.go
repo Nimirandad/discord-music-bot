@@ -101,6 +101,9 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 	if cancelPlaylist != nil {
 		go b.loadRemainingSpotifyTracks(playlistContext, cancelPlaylist, playlistID, guildID, requestChannelID, pendingTracks, username, requesterID)
 	}
+	if position == 1 {
+		waitForPlaybackStart(ctx, p.Snapshot, tracks[0].URL)
+	}
 
 	var confirmation *discord.Message
 	if loadingMessage != nil {
@@ -118,9 +121,6 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 		b.logger.Error("send queue confirmation", "guild_id", guildID, "error", err)
 	} else if err := b.showControlPanel(guildID, confirmation); err != nil {
 		b.logger.Error("show playback control panel", "guild_id", guildID, "error", err)
-	}
-	if position == 1 {
-		waitForPlaybackStart(ctx, p.Snapshot, tracks[0].URL)
 	}
 	return nil
 }
