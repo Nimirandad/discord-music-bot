@@ -16,7 +16,6 @@ import (
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/bot"
 	"github.com/disgoorg/disgo/cache"
-	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/gateway"
 	"github.com/disgoorg/disgo/voice"
 	"github.com/disgoorg/snowflake/v2"
@@ -126,6 +125,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Bot, error) {
 			voice.WithDaveSessionLogger(logger),
 		),
 		bot.WithEventListenerFunc(application.onMessage),
+		bot.WithEventListenerFunc(application.onApplicationCommand),
 		bot.WithEventListenerFunc(application.onComponent),
 		bot.WithEventListenerFunc(application.onVoiceStateUpdate),
 	)
@@ -156,9 +156,9 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := b.client.SetPresence(ctx, gateway.WithListeningActivity("!play")); err != nil {
 		b.logger.Error("set listening activity", "error", err)
 	}
-	if _, err := b.client.Rest.SetGlobalCommands(b.client.ApplicationID, []discord.ApplicationCommandCreate{}); err != nil {
+	if _, err := b.client.Rest.SetGlobalCommands(b.client.ApplicationID, slashCommands()); err != nil {
 		b.shutdown(server)
-		return fmt.Errorf("remove obsolete Discord slash commands: %w", err)
+		return fmt.Errorf("register Discord slash commands: %w", err)
 	}
 	b.mu.Lock()
 	b.ready = true

@@ -52,7 +52,7 @@ func (b *Bot) onMessage(event *events.GuildMessageCreate) {
 	case "stop", "leave":
 		b.stopCommand(event)
 	case "queue":
-		b.queueCommand(event)
+		b.queueCommand(event, args)
 	case "remove", "move", "clearqueue", "skipto":
 		b.manageQueueCommand(event, command, args)
 	}
@@ -104,7 +104,7 @@ func (b *Bot) joinCommand(event *events.GuildMessageCreate) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		if err := b.joinVoice(ctx, guildID, channelID); err != nil {
-			b.sendChannelMessage(requestChannelID, "No pude moverme a tu canal de voz. Confirma los permisos de acceso y conexión. Detalle: "+err.Error())
+			b.sendChannelMessage(requestChannelID, "No pude conectarme al canal de voz. Comprueba mis permisos de acceso y conexión. "+userFacingError(err))
 			return
 		}
 		b.cancelLeaveTimer(guildID)
@@ -164,7 +164,7 @@ func (b *Bot) resolveAndEnqueue(guildID, voiceChannelID, requestChannelID snowfl
 		if resultErr == nil {
 			return
 		}
-		content := "No pude añadir la canción: " + resultErr.Error()
+		content := "No pude añadir la canción: " + userFacingError(resultErr)
 		if loadingMessage != nil {
 			if _, err := b.client.Rest.UpdateMessage(requestChannelID, loadingMessage.ID, discord.NewMessageUpdate().WithContent(content).WithEmbeds()); err == nil {
 				return
@@ -481,7 +481,7 @@ func (b *Bot) skipCommand(event *events.GuildMessageCreate) {
 		return
 	}
 	if err := p.Skip(); err != nil {
-		b.sendMessage(event, err.Error())
+		b.sendMessage(event, userFacingError(err))
 		return
 	}
 	b.sendMessage(event, "Canción saltada.")
@@ -494,7 +494,7 @@ func (b *Bot) previousCommand(event *events.GuildMessageCreate) {
 		return
 	}
 	if err := p.Previous(); err != nil {
-		b.sendMessage(event, err.Error())
+		b.sendMessage(event, userFacingError(err))
 		return
 	}
 	b.sendMessage(event, "Reproduciendo la canción anterior.")
@@ -508,7 +508,7 @@ func (b *Bot) pauseCommand(event *events.GuildMessageCreate) {
 	}
 	paused, err := p.TogglePause()
 	if err != nil {
-		b.sendMessage(event, err.Error())
+		b.sendMessage(event, userFacingError(err))
 		return
 	}
 	if paused {
@@ -538,29 +538,23 @@ func (b *Bot) stopCommand(event *events.GuildMessageCreate) {
 	b.sendStoppedPlaybackMessage(event.ChannelID, event.Message.Author.ID, nil)
 }
 
-func (b *Bot) queueCommand(event *events.GuildMessageCreate) {
+func (b *Bot) queueCommand(event *events.GuildMessageCreate, args string) {
+	page, err := parseQueuePage(args)
+	if err != nil {
+		b.sendMessage(event, err.Error())
+		return
+	}
 	p := b.player(event.GuildID)
 	if p == nil {
 		b.sendMessage(event, "La cola está vacía.")
 		return
 	}
-	snapshot := p.Snapshot()
-	lines := make([]string, 0, 11)
-	if snapshot.Current != nil {
-		lines = append(lines, "**Reproduciendo:** "+displayMusicTitle(*snapshot.Current))
-	}
-	for index, track := range snapshot.Queue {
-		if index == 10 {
-			lines = append(lines, fmt.Sprintf("… y %d canciones más.", len(snapshot.Queue)-index))
-			break
-		}
-		lines = append(lines, fmt.Sprintf("%d. %s", index+1, displayMusicTitle(track)))
-	}
-	if len(lines) == 0 {
-		b.sendMessage(event, "La cola está vacía.")
+	content, err := renderQueue(p.Snapshot(), page)
+	if err != nil {
+		b.sendMessage(event, err.Error())
 		return
 	}
-	b.sendMessage(event, strings.Join(lines, "\n"))
+	b.sendMessage(event, content)
 }
 
 func (b *Bot) sendMessage(event *events.GuildMessageCreate, content string) (*discord.Message, error) {

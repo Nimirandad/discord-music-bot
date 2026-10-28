@@ -138,7 +138,7 @@ Use the format `CONTAINER_IMAGE=ghcr.io/<owner>/discord-music-bot:<tag>`. The sy
 
 ## Automatic GitHub Actions deployment over Tailscale
 
-The repository workflow `.github/workflows/deploy.yml` runs tests and `go vet`, builds a Linux ARM64 image, publishes it to GHCR, then deploys it over a private Tailscale connection. The first workflow run publishes `1.1.5`; later runs increment the patch version. A failed health check restores the previous image reference and restarts the service. Each deployment restarts the bot, so its in-memory queues and active voice sessions end.
+The repository workflow `.github/workflows/deploy.yml` runs tests and `go vet`, builds a Linux ARM64 image, publishes it to GHCR, then deploys it over a private Tailscale connection. It calculates SemVer from Conventional Commit messages since the last successful release: `feat:` increments minor, `fix:` and other commits increment patch, and `!:` or `BREAKING CHANGE:` increments major. The initial baseline was the deployed `1.1.5`; later successful releases are recorded as Git tags. A failed health check restores the previous image reference and restarts the service. Each deployment restarts the bot, so its in-memory queues and active voice sessions end.
 
 ### Prepare the Oracle VM
 

@@ -14,4 +14,9 @@ func TestHelpMessageListsAvailableCommands(t *testing.T) {
 			t.Errorf("help message does not include %s", command)
 		}
 	}
+	for _, command := range []string{"/play", "/join", "/pause", "/skip", "/previous", "/queue", "/shuffle", "/remove", "/move", "/skipto", "/clearqueue", "/stop", "/leave", "/help"} {
+		if !strings.Contains(helpMessage(), command) {
+			t.Errorf("help message does not include %s", command)
+		}
+	}
 }
