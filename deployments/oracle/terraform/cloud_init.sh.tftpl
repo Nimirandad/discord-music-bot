@@ -1,0 +1,61 @@
+#!/bin/bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io
+systemctl enable --now docker
+docker network create discord-music-bot
+
+cat >/etc/discord-music-bot-image <<'IMAGE'
+CONTAINER_IMAGE=${container_image}
+IMAGE
+chmod 0644 /etc/discord-music-bot-image
+
+cat >/etc/systemd/system/discord-music-bot.service <<'UNIT'
+[Unit]
+Description=Discord Music Bot container
+After=docker.service bgutil-ytdlp-pot-provider.service
+Requires=docker.service bgutil-ytdlp-pot-provider.service
+ConditionPathExists=/etc/discord-music-bot.env
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/discord-music-bot-image
+Restart=always
+RestartSec=10
+ExecStartPre=-/usr/bin/docker rm -f discord-music-bot
+ExecStartPre=/usr/bin/docker pull $${CONTAINER_IMAGE}
+ExecStart=/usr/bin/docker run --rm --name discord-music-bot --network discord-music-bot --env-file=/etc/discord-music-bot.env --mount type=volume,source=discord-music-bot-spotify-data,target=/var/lib/discord-music-bot --publish 127.0.0.1:8080:8080 --health-cmd="python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)\"" --health-interval=30s --health-timeout=5s --health-retries=3 --health-start-period=20s $${CONTAINER_IMAGE}
+ExecStop=/usr/bin/docker stop --time 30 discord-music-bot
+ExecStopPost=-/usr/bin/docker rm -f discord-music-bot
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/bgutil-ytdlp-pot-provider.service <<'UNIT'
+[Unit]
+Description=yt-dlp YouTube PO Token provider
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStartPre=-/usr/bin/docker rm -f bgutil-pot-provider
+ExecStartPre=/usr/bin/docker pull brainicism/bgutil-ytdlp-pot-provider:2.0.2-deno
+ExecStart=/usr/bin/docker run --rm --init --name bgutil-pot-provider --network discord-music-bot --network-alias bgutil-pot-provider brainicism/bgutil-ytdlp-pot-provider:2.0.2-deno
+ExecStop=/usr/bin/docker stop --time 10 bgutil-pot-provider
+ExecStopPost=-/usr/bin/docker rm -f bgutil-pot-provider
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable bgutil-ytdlp-pot-provider.service
+systemctl enable discord-music-bot.service

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: discord-music-bot
+  namespace: discord
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: discord-music-bot
+  ports:
+    - name: health
+      port: 8080
+      targetPort: health
+      protocol: TCP

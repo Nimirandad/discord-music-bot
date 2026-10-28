@@ -1,0 +1,22 @@
+.git
+.env
+.env.*
+/bin/
+/dist/
+*.exe
+*.log
+*.tmp
+
+# Deployment secrets and local infrastructure state
+deployments/
+**/*cookie*.txt
+**/*spotify*token*.json
+id_rsa
+id_ed25519
+*.pem
+*.ppk
+*.p12
+*.pfx
+README.md
+deployments
+docker-compose.yml

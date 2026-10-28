@@ -1,0 +1,34 @@
+services:
+  bgutil-pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2-deno
+    init: true
+    restart: unless-stopped
+  bot:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      HTTP_ADDR: ":8080"
+      AUTO_LEAVE_SECONDS: "${AUTO_LEAVE_SECONDS:-180}"
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - spotify-data:/var/lib/discord-music-bot
+    depends_on:
+      - bgutil-pot-provider
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  spotify-data:

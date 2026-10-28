@@ -1,0 +1,39 @@
+.env
+.env.*
+!.env.example
+
+# Local credentials and exported session data
+deployments/k8s/secret.yaml
+**/*cookie*.txt
+**/*spotify*token*.json
+id_rsa
+id_ed25519
+*.pem
+*.ppk
+*.p12
+*.pfx
+
+# Local Terraform state, plans, and overrides
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/terraform.tfvars
+**/terraform.tfvars.json
+**/crash.log
+**/crash.*.log
+**/override.tf
+**/override.tf.json
+**/*_override.tf
+**/*_override.tf.json
+
+# Build output and local runtime files
+/bin/
+/dist/
+*.exe
+*.log
+*.tmp
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
